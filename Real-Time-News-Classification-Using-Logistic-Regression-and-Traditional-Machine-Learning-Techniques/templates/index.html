@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fake News Detector | AI Analysis</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+</head>
+<body>
+    <div class="overlay"></div>
+    <div class="loading">
+        <div class="loading-spinner"></div>
+    </div>
+
+    <div class="container">
+        <h1><i class="fas fa-newspaper"></i> Fake News Detector</h1>
+        <form method="POST" id="news-form">
+            <div class="textarea-container">
+                <textarea name="news_content" id="news-content" placeholder="Paste news article or content here..." required></textarea>
+                <div class="voice-controls">
+                    <button type="button" id="dictate-btn" class="circle-btn" title="Dictate content">
+                        <i class="fas fa-microphone"></i>
+                    </button>
+                    <button type="button" id="listen-btn" class="circle-btn" title="Listen to content">
+                        <i class="fas fa-volume-up"></i>
+                    </button>
+                </div>
+            </div>
+            <button type="submit" id="detect-btn">
+                <i class="fas fa-magnifying-glass"></i> Analyze Content
+            </button>
+        </form>
+
+        {% if prediction_class is not none %}
+            <div class="result">
+                <h2><i class="fas fa-chart-line"></i> Analysis Result</h2>
+                <div class="result-content">
+                    {% if prediction_class == 0 %}
+                        <p class="reliable">
+                            <i class="fas fa-check-circle fa-bounce"></i> 
+                            This news appears to be <b>Reliable</b>
+                        </p>
+                    {% else %}
+                        <p class="fake">
+                            <i class="fas fa-triangle-exclamation fa-shake"></i> 
+                            This news appears to be <b>Potentially Misleading</b>
+                        </p>
+                    {% endif %}
+
+                    {% if confidence is not none %}
+                        <p class="confidence">
+                            <i class="fas fa-gauge-high"></i> Confidence: {{ (confidence*100)|round(1) }}%
+                        </p>
+                        <div class="progress-container">
+                            <div class="progress-bar {% if prediction_class == 0 %}reliable-bar{% else %}fake-bar{% endif %}" 
+                                style="width: 0%;" 
+                                data-width="{{ (confidence*100)|round(1) }}%">
+                            </div>
+                        </div>
+                    {% endif %}
+                    <button type="button" id="read-result-btn" class="voice-btn">
+                        <i class="fas fa-headphones"></i> Listen to Result
+                    </button>
+                </div>
+            </div>
+
+            <div class="charts">
+                <h2><i class="fas fa-chart-pie"></i> Content Analysis</h2>
+                
+                <div class="word-stats">
+                    <div class="stat-item matched">
+                        <i class="fas fa-check"></i>
+                        <div class="stat-value">{{ matched }}</div>
+                        <div class="stat-label">Recognized Words</div>
+                    </div>
+                    <div class="stat-item unmatched">
+                        <i class="fas fa-xmark"></i>
+                        <div class="stat-value">{{ unmatched }}</div>
+                        <div class="stat-label">Unrecognized Words</div>
+                    </div>
+                </div>
+                
+                <div class="charts-container">
+                    <div class="chart-card">
+                        <h3>Word Distribution</h3>
+                        <canvas id="barChart"></canvas>
+                    </div>
+                    <div class="chart-card">
+                        <h3>Recognition Ratio</h3>
+                        <canvas id="pieChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        {% endif %}
+    </div>
+
+    <!-- Audio elements for playback -->
+    <audio id="content-audio" class="hidden"></audio>
+    <audio id="result-audio" class="hidden"></audio>
+
+    <!-- Recording status modal -->
+    <div id="recording-modal" class="modal">
+        <div class="modal-content">
+            <div class="recording-animation">
+                <div class="recording-wave"></div>
+                <div class="recording-wave"></div>
+                <div class="recording-wave"></div>
+            </div>
+            <p>Recording... <span id="recording-time">0:00</span></p>
+            <button id="stop-recording-btn"><i class="fas fa-stop-circle"></i> Stop Recording</button>
+        </div>
+    </div>
+
+    <script>
+        // Loading animation
+        window.addEventListener('load', function() {
+            document.querySelector('.loading').classList.add('fadeOut');
+        });
+        
+        document.getElementById('news-form').addEventListener('submit', function() {
+            document.querySelector('.loading').classList.remove('fadeOut');
+        });
+
+        // 3D hover effect
+        document.addEventListener('mousemove', function(e) {
+            const container = document.querySelector('.container');
+            const xAxis = (window.innerWidth / 2 - e.pageX) / 25;
+            const yAxis = (window.innerHeight / 2 - e.pageY) / 25;
+            container.style.transform = `rotateY(${xAxis}deg) rotateX(${yAxis}deg)`;
+        });
+        
+        document.addEventListener('mouseleave', function() {
+            const container = document.querySelector('.container');
+            container.style.transform = 'rotateY(0deg) rotateX(0deg)';
+        });
+
+        // Speech to Text functionality
+        let mediaRecorder;
+        let audioChunks = [];
+        let recordingTimer;
+        let recordingSeconds = 0;
+
+        const recordingModal = document.getElementById('recording-modal');
+        const recordingTime = document.getElementById('recording-time');
+        const dictateBtn = document.getElementById('dictate-btn');
+        const stopRecordingBtn = document.getElementById('stop-recording-btn');
+
+        dictateBtn.addEventListener('click', startRecording);
+        stopRecordingBtn.addEventListener('click', stopRecording);
+
+        function startRecording() {
+            if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                navigator.mediaDevices.getUserMedia({ audio: true })
+                    .then(stream => {
+                        // Show recording modal
+                        recordingModal.style.display = 'flex';
+                        
+                        // Reset recording time
+                        recordingSeconds = 0;
+                        recordingTime.textContent = '0:00';
+                        
+                        // Start timer
+                        recordingTimer = setInterval(updateRecordingTime, 1000);
+                        
+                        // Initialize recorder
+                        mediaRecorder = new MediaRecorder(stream);
+                        audioChunks = [];
+                        
+                        mediaRecorder.ondataavailable = event => {
+                            audioChunks.push(event.data);
+                        };
+                        
+                        mediaRecorder.onstop = () => {
+                            const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                            sendAudioToServer(audioBlob);
+                            
+                            // Stop all tracks in the stream to release microphone
+                            stream.getTracks().forEach(track => track.stop());
+                        };
+                        
+                        mediaRecorder.start();
+                    })
+                    .catch(error => {
+                        console.error('Error accessing microphone:', error);
+                        alert('Could not access your microphone. Please check permissions and try again.');
+                    });
+            } else {
+                alert('Your browser does not support speech recognition');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                clearInterval(recordingTimer);
+                recordingModal.style.display = 'none';
+            }
+        }
+
+        function updateRecordingTime() {
+            recordingSeconds++;
+            const minutes = Math.floor(recordingSeconds / 60);
+            const seconds = recordingSeconds % 60;
+            recordingTime.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        }
+
+        function sendAudioToServer(audioBlob) {
+            document.querySelector('.loading').classList.remove('fadeOut');
+            
+            const formData = new FormData();
+            formData.append('audio', audioBlob, 'recording.wav');
+            
+            fetch('/api/speech', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.text) {
+                    document.getElementById('news-content').value = data.text;
+                } else if (data.error) {
+                    alert('Error: ' + data.error);
+                }
+                document.querySelector('.loading').classList.add('fadeOut');
+            })
+            .catch(error => {
+                console.error('Error sending audio to server:', error);
+                alert('Error processing speech. Please try again.');
+                document.querySelector('.loading').classList.add('fadeOut');
+            });
+        }
+
+        // Text to Speech functionality
+        const listenBtn = document.getElementById('listen-btn');
+        const contentAudio = document.getElementById('content-audio');
+        
+        listenBtn.addEventListener('click', function() {
+            const text = document.getElementById('news-content').value;
+            if (!text.trim()) {
+                alert('Please enter some text first');
+                return;
+            }
+            
+            document.querySelector('.loading').classList.remove('fadeOut');
+            
+            fetch('/api/text-to-speech', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ text: text })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    contentAudio.src = `/audio/${data.file}`;
+                    contentAudio.play();
+                } else if (data.error) {
+                    alert('Error: ' + data.error);
+                }
+                document.querySelector('.loading').classList.add('fadeOut');
+            })
+            .catch(error => {
+                console.error('Error converting text to speech:', error);
+                alert('Error processing text to speech. Please try again.');
+                document.querySelector('.loading').classList.add('fadeOut');
+            });
+        });
+
+        // Listen to result button
+        const readResultBtn = document.getElementById('read-result-btn');
+        const resultAudio = document.getElementById('result-audio');
+        
+        if (readResultBtn) {
+            readResultBtn.addEventListener('click', function() {
+                {% if prediction_class is not none %}
+                    document.querySelector('.loading').classList.remove('fadeOut');
+                    
+                    fetch('/api/read-result', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ 
+                            prediction_class: {{ prediction_class }},
+                            {% if confidence is not none %}
+                            confidence: {{ confidence }}
+                            {% else %}
+                            confidence: null
+                            {% endif %}
+                        })
+                    })
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.success) {
+                            resultAudio.src = `/audio/${data.file}`;
+                            resultAudio.play();
+                        } else if (data.error) {
+                            alert('Error: ' + data.error);
+                        }
+                        document.querySelector('.loading').classList.add('fadeOut');
+                    })
+                    .catch(error => {
+                        console.error('Error reading result:', error);
+                        alert('Error processing speech. Please try again.');
+                        document.querySelector('.loading').classList.add('fadeOut');
+                    });
+                {% endif %}
+            });
+        }
+
+        {% if prediction_class is not none %}
+            // Charts initialization
+            document.addEventListener('DOMContentLoaded', function() {
+                // Animate confidence bar
+                setTimeout(function() {
+                    const progressBar = document.querySelector('.progress-bar');
+                    const targetWidth = progressBar.getAttribute('data-width');
+                    progressBar.style.width = targetWidth;
+                }, 300);
+                
+                // Bar chart
+                const barCtx = document.getElementById('barChart').getContext('2d');
+                new Chart(barCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: ['Recognized Words', 'Unrecognized Words'],
+                        datasets: [{
+                            label: 'Word Count',
+                            data: [{{ matched }}, {{ unmatched }}],
+                            backgroundColor: [
+                                'rgba(16, 185, 129, 0.7)',
+                                'rgba(239, 68, 68, 0.7)'
+                            ],
+                            borderColor: [
+                                'rgb(16, 185, 129)',
+                                'rgb(239, 68, 68)'
+                            ],
+                            borderWidth: 1,
+                            borderRadius: 8,
+                            hoverOffset: 4
+                        }]
+                    },
+                    options: {
+                        animation: {
+                            duration: 2000,
+                            easing: 'easeOutQuart'
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                grid: {
+                                    color: 'rgba(255, 255, 255, 0.1)'
+                                },
+                                ticks: {
+                                    color: 'rgba(255, 255, 255, 0.7)'
+                                }
+                            },
+                            x: {
+                                grid: {
+                                    display: false
+                                },
+                                ticks: {
+                                    color: 'rgba(255, 255, 255, 0.7)'
+                                }
+                            }
+                        },
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        responsive: true,
+                        maintainAspectRatio: true
+                    }
+                });
+
+                // Pie chart
+                const pieCtx = document.getElementById('pieChart').getContext('2d');
+                new Chart(pieCtx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['Recognized Words', 'Unrecognized Words'],
+                        datasets: [{
+                            data: [{{ matched }}, {{ unmatched }}],
+                            backgroundColor: [
+                                'rgba(16, 185, 129, 0.7)',
+                                'rgba(239, 68, 68, 0.7)'
+                            ],
+                            borderColor: [
+                                'rgb(16, 185, 129)',
+                                'rgb(239, 68, 68)'
+                            ],
+                            borderWidth: 1,
+                            hoverOffset: 15
+                        }]
+                    },
+                    options: {
+                        animation: {
+                            animateRotate: true,
+                            animateScale: true,
+                            duration: 2000,
+                            easing: 'easeOutCirc'
+                        },
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: {
+                                    color: 'rgba(255, 255, 255, 0.7)',
+                                    padding: 15,
+                                    font: {
+                                        size: 12
+                                    }
+                                }
+                            }
+                        },
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        cutout: '65%'
+                    }
+                });
+            });
+        {% endif %}
+    </script>
+</body>
+</html>
