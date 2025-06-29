@@ -44,4 +44,5 @@ pandas, numpy
 nltk, spaCy
 matplotlib, seaborn
 joblib (for model serialization)<br>
+<br>
 © 2025 Supriya Dutta and Rupesh Patel. All rights reserved. This project is developed and maintained by Supriya Dutta and Rupesh Patel. Unauthorized copying, reproduction, or redistribution is prohibited. This project is licensed under the MIT License - see the LICENSE file for details.
